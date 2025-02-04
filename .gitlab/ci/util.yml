@@ -1,17 +1,3 @@
-.submodules_mirror_update_snippet: &submodules_mirror_update_snippet |
-  # Gitlab doesn't clean submodule contents
-  git submodule foreach "git clean -d -x -f" || true
-  # Use local mirror for submodules
-  git config submodule.tools/git2cl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/git2cl.git
-  git config submodule.jimtcl.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/jimtcl.git
-  git config submodule.src/jtag/drivers/libjaylink.url https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/idf/libjaylink.git
-  git submodule update --init
-
-.submodules_mirror_update:
-  script:
-    - *submodules_mirror_update_snippet
-
-
 .export_toolchain_snippet: &export_toolchain_snippet |
   echo "TOOLCHAIN_PREFIX: ${TOOLCHAIN_PREFIX}"
   echo "ESP_TOOLCHAIN: ${ESP_TOOLCHAIN}"

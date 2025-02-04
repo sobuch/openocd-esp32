@@ -18,7 +18,6 @@
   variables:
     PLATFORM_NAME: "linux-armhf-test"
   script:
-    - !reference [.submodules_mirror_update, script]
     - !reference [.export_toolchain, script]
     - export ASAN_OPTIONS=detect_invalid_pointer_pairs=2:print_stacktrace=1:strict_string_checks=1:halt_on_error=0:allocator_may_return_null=1
     - . $PWD/${TEST_RUN_DIR}/gen_ut_app/gcov_data/gcov_env.sh
