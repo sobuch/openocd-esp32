@@ -16,7 +16,7 @@ jobs:
           fi
       - uses: actions/checkout@v4
       - name: install deps
-        run: brew install automake texinfo coreutils
+        run: brew install automake texinfo coreutils jimtcl
       - name: Build and Upload OpenOCD artifact
         uses: ./.github/actions/common-build-steps
         with:
@@ -33,25 +33,25 @@ jobs:
           fi
       - uses: actions/checkout@v4
       - name: install deps
-        run: brew install automake libtool texinfo coreutils
+        run: brew install automake libtool texinfo coreutils jimtcl
       - name: Build and Upload OpenOCD artifact
         uses: ./.github/actions/common-build-steps
         with:
           arch: macos-arm64
 
   build-linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: install deps
-        run: sudo apt-get install libudev-dev systemd --force-yes -y
+        run: sudo apt-get install libudev-dev systemd libjim-dev --force-yes -y
       - name: Build and Upload OpenOCD artifact
         uses: ./.github/actions/common-build-steps
         with:
           arch: linux
 
   build-windows:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: install deps
