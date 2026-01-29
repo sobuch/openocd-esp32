@@ -568,7 +568,13 @@ static uint32_t stub_flash_get_size(void)
 
 	STUB_LOGD("%s: ENTER\n", __func__);
 
-	uint32_t id = stub_flash_get_id();
+	uint32_t id = 0, id_check;
+	int retries = 10;
+	do {
+		id_check = id;
+		id = stub_flash_get_id();
+	} while ((id != id_check || id == 0) && retries-- > 0);
+
 	switch (id) {
 		case 0x12:
 			size = 256 * 1024;
