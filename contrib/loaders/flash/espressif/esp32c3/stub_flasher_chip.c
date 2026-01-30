@@ -73,18 +73,21 @@ void stub_flash_state_prepare(struct stub_flash_state *state)
 {
 	uint32_t spiconfig = ets_efuse_get_spiconfig();
 	uint32_t strapping = REG_READ(GPIO_STRAP_REG);
+	STUB_LOGI("strapping=%u\n",strapping);
 	/* If GPIO1 (U0TXD) is pulled low and flash pin configuration is not set in efuse, assume
 	 * HSPI flash mode (same as normal boot) */
-	if (spiconfig == 0 && (strapping & 0x1c) == 0x08)
-		spiconfig = 1; /* HSPI flash mode */
-
-	esp_rom_spiflash_attach(spiconfig, 0);
+	if (spiconfig == 0 && (strapping & 0x1c) == 0x08){
+		//spiconfig = 1; /* HSPI flash mode */
+	}
+	STUB_LOGI("spiconfig=%u\n",spiconfig);
 
 	state->cache_enabled = stub_is_cache_enabled();
 	if (!state->cache_enabled) {
 		STUB_LOGI("Cache needs to be enabled\n");
 		stub_cache_init();
 	}
+
+	esp_rom_spiflash_attach(spiconfig, 0);
 }
 
 void stub_flash_state_restore(struct stub_flash_state *state)
