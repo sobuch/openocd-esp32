@@ -36,3 +36,4 @@ jobs:
           artifacts: "openocd*.zip"
           prerelease: true
           token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: true
