@@ -388,7 +388,7 @@ tests_esp32s31:
       optional: true
   variables:
     CHIP_NAME: "esp32s31"
-    TEST_RUN_BOARD_OPTS: "-b esp32s31-builtin -e test_*.*Encrypted *.*.test_big_binary *.*.test_big_binary_compressed"
+    TEST_RUN_BOARD_OPTS: "-b esp32s31-builtin -e test_*.*Encrypted"
 
 # TODO OCD-1398
 .tests_esp32s31_lpcore:
