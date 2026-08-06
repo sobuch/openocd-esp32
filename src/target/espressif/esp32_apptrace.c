@@ -407,6 +407,29 @@ static int esp32_apptrace_block_free(struct esp32_apptrace_cmd_ctx *ctx, struct 
 	return ERROR_OK;
 }
 
+/* On SysView stop, called synchronously before finalize/TRACE_STOP so any still-queued
+ * uplink data is written first; otherwise sv_core_stopped would drop those packets. */
+static int esp32_apptrace_process_ready_blocks(struct esp32_apptrace_cmd_ctx *ctx)
+{
+	while (!list_empty(&ctx->ready_trace_blocks)) {
+		struct esp32_apptrace_block *block = esp32_apptrace_ready_block_get(ctx);
+		if (!block)
+			break;
+		int res = esp32_apptrace_handle_trace_block(ctx, block);
+		if (res != ERROR_OK) {
+			LOG_ERROR("Failed to process queued trace block %" PRId32 " bytes!", block->data_len);
+			esp32_apptrace_block_free(ctx, block);
+			return res;
+		}
+		res = esp32_apptrace_block_free(ctx, block);
+		if (res != ERROR_OK) {
+			LOG_ERROR("Failed to free queued trace block!");
+			return res;
+		}
+	}
+	return ERROR_OK;
+}
+
 static int esp32_apptrace_wait_tracing_finished(struct esp32_apptrace_cmd_ctx *ctx)
 {
 	int64_t timeout = timeval_ms() + (LOG_LEVEL_IS(LOG_LVL_DEBUG) ? 70000 : 5000);
@@ -1299,7 +1322,6 @@ static int esp32_sysview_start(struct esp32_apptrace_cmd_ctx *ctx)
 	uint8_t cmds[] = { SEGGER_SYSVIEW_COMMAND_ID_START };
 	uint32_t fired_target_num = 0;
 	struct esp32_apptrace_target_state target_state[ESP32_APPTRACE_MAX_CORES_NUM] = {{0}};
-	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
 
 	/* get current block id */
 	int res = esp32_apptrace_get_data_info(ctx, target_state, &fired_target_num);
@@ -1319,13 +1341,12 @@ static int esp32_sysview_start(struct esp32_apptrace_cmd_ctx *ctx)
 		LOG_ERROR("sysview: Failed to start tracing!");
 		return res;
 	}
-	cmd_data->sv_trace_running = 1;
 	return res;
 }
 
 static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 {
-	uint32_t old_block_id, fired_target_num = 0, empty_target_num = 0;
+	uint32_t old_block_id, fired_target_num = 0;
 	struct esp32_apptrace_target_state target_state[ESP32_APPTRACE_MAX_CORES_NUM];
 	struct esp32_sysview_cmd_data *cmd_data = ctx->cmd_priv;
 	uint8_t cmds[] = { SEGGER_SYSVIEW_COMMAND_ID_STOP };
@@ -1362,7 +1383,9 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 			LOG_ERROR("sysview: Failed to read data on (%s)!", target_name(ctx->cpus[fired_target_num]));
 			return res;
 		}
-		/* process data */
+		res = esp32_apptrace_process_ready_blocks(ctx);
+		if (res != ERROR_OK)
+			return res;
 		block->data_len = target_state[fired_target_num].data_len;
 		res = esp32_apptrace_handle_trace_block(ctx, block);
 		if (res != ERROR_OK) {
@@ -1370,14 +1393,41 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 			return res;
 		}
 	}
-	/* Stop tracing and ack target data on every core */
+	/* Membufs are shared, so write STOP once at the newest block_id. Only the
+	 * writing core gets host data; asserting it on other cores makes them treat
+	 * later uplink bytes as a host header (SysView down buf is only 32 bytes). */
+	uint32_t sync_block_id = target_state[0].block_id;
+	uint32_t min_block_id = target_state[0].block_id;
+	/* Find the newest block_id */
+	for (unsigned int k = 1; k < ctx->cores_num; k++) {
+		if (target_state[k].block_id > sync_block_id)
+			sync_block_id = target_state[k].block_id;
+		if (target_state[k].block_id < min_block_id)
+			min_block_id = target_state[k].block_id;
+	}
+	/* After wrap, one core can still show max while the other already shows 0;
+	 * 0 is the newer id in that case. */
+	if (ctx->cores_num > 1 && sync_block_id == ctx->hw->max_block_id && min_block_id == 0)
+		sync_block_id = 0;
+
+	res = esp_apptrace_usr_block_write(ctx->hw, ctx->cpus[0], sync_block_id, cmds, sizeof(cmds));
+	if (res != ERROR_OK) {
+		LOG_ERROR("sysview: Failed to write STOP to '%s'!", target_name(ctx->cpus[0]));
+		return res;
+	}
 	for (unsigned int k = 0; k < ctx->cores_num; k++) {
-		res = esp_apptrace_usr_block_write(ctx->hw, ctx->cpus[k], target_state[k].block_id,
-			cmds,
-			sizeof(cmds));
-		if (res != ERROR_OK) {
-			LOG_ERROR("sysview: Failed to stop tracing on '%s'!", target_name(ctx->cpus[k]));
-			return res;
+		target_state[k].block_id = sync_block_id;
+		/* Sync block id on all cores */
+		if (k > 0) {
+			res = ctx->hw->ctrl_reg_write(ctx->cpus[k],
+				sync_block_id,
+				0 /*acked*/,
+				true /*host connected*/,
+				false /*no host data*/);
+			if (res != ERROR_OK) {
+				LOG_ERROR("sysview: Failed to sync block id on '%s'!", target_name(ctx->cpus[k]));
+				return res;
+			}
 		}
 	}
 	/* resume targets to allow command processing */
@@ -1412,7 +1462,7 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 	/* we are waiting for the last data from tracing block and also there can be data in the pended
 	 * data buffer */
 	/* so we are expecting two TRX block switches at most or stopping due to timeout */
-	while (cmd_data->sv_trace_running) {
+	while (!esp32_sysview_all_stopped(ctx)) {
 		res = esp32_apptrace_get_data_info(ctx, target_state, &fired_target_num);
 		if (res != ERROR_OK) {
 			LOG_ERROR("sysview: Failed to read targets data info!");
@@ -1426,36 +1476,36 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 		}
 		if (target_state[fired_target_num].block_id != old_block_id) {
 			if (target_state[fired_target_num].data_len) {
-				/* read last data and ack them */
+				/* Read without ack; ack all cores after parse with host data clear. */
 				res = ctx->hw->data_read(ctx->cpus[fired_target_num],
 					target_state[fired_target_num].data_len,
 					block->data,
 					target_state[fired_target_num].block_id,
-					true /*ack target data*/);
+					false /*no ack yet*/);
 				if (res != ERROR_OK) {
 					LOG_ERROR("sysview: Failed to read last data on (%s)!", target_name(ctx->cpus[fired_target_num]));
 				} else {
-					if (ctx->cores_num > 1) {
-						/* ack target data on another CPU */
-						empty_target_num = fired_target_num ? 0 : 1;
-						res = ctx->hw->ctrl_reg_write(ctx->cpus[empty_target_num],
-							target_state[fired_target_num].block_id,
-							0 /*all read*/,
-							true /*host connected*/,
-							false /*no host data*/);
-						if (res != ERROR_OK) {
-							LOG_ERROR("sysview: Failed to ack data on target '%s' (%d)!",
-								target_name(ctx->cpus[empty_target_num]), res);
-							return res;
-						}
-					}
-					/* process data */
+					res = esp32_apptrace_process_ready_blocks(ctx);
+					if (res != ERROR_OK)
+						return res;
 					block->data_len = target_state[fired_target_num].data_len;
 					res = esp32_apptrace_handle_trace_block(ctx, block);
 					if (res != ERROR_OK) {
 						LOG_ERROR("Failed to process trace block %" PRId32 " bytes!",
 							block->data_len);
 						return res;
+					}
+					for (unsigned int k = 0; k < ctx->cores_num; k++) {
+						res = ctx->hw->ctrl_reg_write(ctx->cpus[k],
+							target_state[fired_target_num].block_id,
+							0 /*all read*/,
+							true /*host connected*/,
+							false /*no host data*/);
+						if (res != ERROR_OK) {
+							LOG_ERROR("sysview: Failed to ack data on target '%s' (%d)!",
+								target_name(ctx->cpus[k]), res);
+							return res;
+						}
 					}
 				}
 				old_block_id = target_state[fired_target_num].block_id;
@@ -1486,12 +1536,22 @@ static int esp32_sysview_stop(struct esp32_apptrace_cmd_ctx *ctx)
 		}
 	}
 
+	res = esp32_apptrace_process_ready_blocks(ctx);
+	if (res != ERROR_OK)
+		return res;
+
+	res = esp32_sysview_finish_dests(ctx);
+	if (res != ERROR_OK)
+		LOG_ERROR("sysview: Failed to finalize core destinations (%d)!", res);
+
 	if (cmd_data->multicore_fd > 0) {
-		res = esp32_sysview_combine_files(cmd_data->multicore_fd,
+		int combine_res = esp32_sysview_combine_files(cmd_data->multicore_fd,
 			((struct esp32_apptrace_dest_file_data *)cmd_data->data_dests[0].priv)->fout,
 			((struct esp32_apptrace_dest_file_data *)cmd_data->data_dests[1].priv)->fout);
 		close(cmd_data->multicore_fd);
 		cmd_data->multicore_fd = -1;
+		if (res == ERROR_OK)
+			res = combine_res;
 	}
 
 	return res;
