@@ -223,6 +223,12 @@ class Oocd(threading.Thread):
         self._logger.debug('TELNET <-: %s' % resp)
         return resp.decode('utf-8')
 
+    def consume_output(self):
+        # Discard buffered telnet output so OpenOCD's blocking log writes don't stall it.
+        tn = getattr(self, '_tn', None)
+        if tn is not None:
+            tn.read_very_eager()
+
     # this function is used by 'get_reg' and
     # also can be used to parse output of the 'reg' command executed via GDB's 'monitor'
     def parse_reg_val(self, nm, res_str):

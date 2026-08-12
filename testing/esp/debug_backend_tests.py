@@ -786,6 +786,9 @@ class DebuggerTestAppTests(DebuggerTestsBase):
             # poll GDB
             resp = self.gdb._gdbmi.get_gdb_response(0, raise_error_on_timeout=False)
             self.gdb._parse_mi_resp(resp, new_tgt_state=None)
+            # Consume OpenOCD's telnet output to avoid stalling its main loop.
+            if self.oocd is not None:
+                self.oocd.consume_output()
             time.sleep(step)
 
 class DebuggerGenericTestAppTests(DebuggerTestAppTests):
