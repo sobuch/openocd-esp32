@@ -3505,6 +3505,8 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 		 * be unnecessary.
 		 */
 		uint32_t sbvalue[4] = {0};
+		const unsigned int SB_READ_RETRY_COUNT = 10;
+		unsigned int retry_count = SB_READ_RETRY_COUNT;
 		for (uint32_t i = (next_address - address) / size; i < count - 1;) {
 			const uint32_t size_in_words = DIV_ROUND_UP(size, 4);
 			const uint32_t chunk = MIN(256 / size_in_words, (count - 1 - i));
@@ -3541,6 +3543,7 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 			riscv_batch_free(batch);
 			/* Verify SBADDRESS matches expected value after batch execution. */
 			if (increment) {
+				retry_count--;
 				uint32_t sbcs_read = 0;
 				if (read_sbcs_nonbusy(target, &sbcs_read) != ERROR_OK)
 					return ERROR_FAIL;
@@ -3551,6 +3554,8 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 				target_addr_t current_address = sb_read_address(target);
 				target_addr_t expected_address = address + (i + chunk + 1) * size;
 				if (current_address != expected_address) {
+					if (retry_count <= 0)
+						return ERROR_FAIL;
 					LOG_TARGET_DEBUG(target,
 						"SBADDRESS mismatch after batch: expected 0x%" TARGET_PRIxADDR
 						", got 0x%" TARGET_PRIxADDR, expected_address, current_address);
@@ -3560,6 +3565,7 @@ static int read_memory_bus_v1(struct target *target, const struct riscv_mem_acce
 						return ERROR_FAIL;
 					continue;
 				}
+				retry_count = SB_READ_RETRY_COUNT;
 			}
 			i += chunk;
 		}
